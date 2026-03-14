@@ -38,6 +38,7 @@ class AgentSpec(BaseModel):
     private_memory_path: str = ""
     auth_variable_refs: list[str] = Field(default_factory=list)
     active_tasks: list[str] = Field(default_factory=list)
+    installed_skills: list[str] = Field(default_factory=list)
     spawn_reason: str = ""
     created_by: str = "main_agent"
     created_at: datetime = Field(default_factory=datetime.now)

@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from unifiedcli.agents.runtime import AgentLifecycleManager, ManagedAgent
+from unifiedcli.agents.skills import SkillManager
 from unifiedcli.graph.engine import TaskGraphEngine
 from unifiedcli.models.agent import AgentSpec, AgentStatus, DispatchContract, ReturnContract, FailureResult
 from unifiedcli.models.task import TaskNode, TaskStatus
@@ -21,9 +22,11 @@ class Scheduler:
         self,
         graph: TaskGraphEngine,
         lifecycle: AgentLifecycleManager,
+        skill_manager: SkillManager | None = None,
     ) -> None:
         self.graph = graph
         self.lifecycle = lifecycle
+        self.skill_manager = skill_manager
         self._dispatches: dict[str, DispatchContract] = {}
 
     async def tick(self) -> list[DispatchContract]:
@@ -70,17 +73,28 @@ class Scheduler:
         agent: ManagedAgent | None = match.agent
 
         if match.action == "spawn":
-            # Create a new agent
+            agent_type = task.executor_requirement.agent_type if task.executor_requirement else "generic"
+            capability_tags = task.executor_requirement.capability_tags if task.executor_requirement else []
+
+            # Build a descriptive spawn reason from the task context
+            spawn_reason = _build_spawn_reason(task)
+
+            # Determine skills to install
+            installed_skills: list[str] = []
+            if self.skill_manager:
+                installed_skills = self.skill_manager.install_for_agent(
+                    task_description=task.description or task.name,
+                    spawn_reason=spawn_reason,
+                    capability_tags=capability_tags,
+                )
+
             spec = AgentSpec(
                 agent_id=f"agent_{uuid.uuid4().hex[:8]}",
                 project_id=task.project_id,
-                agent_type=task.executor_requirement.agent_type if task.executor_requirement else "generic",
-                capabilities=(
-                    task.executor_requirement.capability_tags
-                    if task.executor_requirement
-                    else []
-                ),
-                spawn_reason=f"Spawned for task {task.task_id}",
+                agent_type=agent_type,
+                capabilities=capability_tags,
+                installed_skills=installed_skills,
+                spawn_reason=spawn_reason,
             )
             agent = self.lifecycle.create(spec)
 
@@ -120,3 +134,23 @@ class Scheduler:
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2))
+
+
+def _build_spawn_reason(task: TaskNode) -> str:
+    """Build a descriptive spawn reason from task context.
+
+    Instead of just referencing the task_id, include the task name,
+    type, description, and capability tags so the agent (and skill
+    matching) understands WHY it was created.
+    """
+    parts = [f"Execute {task.task_type.value} task: {task.name}"]
+    if task.description:
+        parts.append(f"Description: {task.description}")
+    if task.executor_requirement:
+        tags = ", ".join(task.executor_requirement.capability_tags)
+        parts.append(f"Required capabilities: {tags}")
+    if task.inputs:
+        parts.append(f"Inputs: {', '.join(task.inputs)}")
+    if task.artifact_contract and task.artifact_contract.expected_outputs:
+        parts.append(f"Expected outputs: {', '.join(task.artifact_contract.expected_outputs)}")
+    return ". ".join(parts)
